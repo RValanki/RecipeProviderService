@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Node
+node_modules/
+dist/
+*.js
+*.d.ts
+
+# CDK
+cdk.out/
+.cdk.staging/
+
+# AWS
+.aws/
+
+# Layers (binaries, don't commit these)
+layers/
+
+# Test outputs
+response.json
