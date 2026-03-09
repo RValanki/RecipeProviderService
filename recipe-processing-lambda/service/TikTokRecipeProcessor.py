@@ -106,13 +106,15 @@ Rules:
 - Infer logical steps if the transcript is incomplete but ingredients are mentioned
 - Never return an empty instructions array if there is any cooking-related content
 - For each ingredient, split it into name, quantity, and unit
+- For each ingredient, also provide an emojiIcon that best represents it (e.g. "🧄" for garlic, "🥚" for egg)
+- If you cannot find a suitable emoji for an ingredient, default to "🍽️"
 - Return instructions as plain sentences, no "Step 1:", "Step 2:" prefixes
 
 Return JSON exactly like:
 {
   "ingredients": [
-    { "name": "all-purpose flour", "quantity": "1.5", "unit": "cups" },
-    { "name": "egg", "quantity": "1", "unit": null }
+    { "name": "all-purpose flour", "quantity": "1.5", "unit": "cups", "emojiIcon": "🌾" },
+    { "name": "egg", "quantity": "1", "unit": null, "emojiIcon": "🥚" }
   ],
   "instructions": ["...", "...", "..."]
 }
@@ -150,7 +152,8 @@ Return JSON exactly like:
             Ingredient(
                 name=i.get("name", ""),
                 quantity=i.get("quantity"),
-                unit=i.get("unit")
+                unit=i.get("unit"),
+                emojiIcon=i.get("emojiIcon")
             )
             for i in raw_recipe.get("ingredients", [])
         ]

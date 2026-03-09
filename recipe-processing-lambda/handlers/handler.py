@@ -1,7 +1,6 @@
 import os
 import json
 import logging
-from dataclasses import asdict
 from TikTokRecipeProcessor import TikTokRecipeProcessor
 from WebRecipeProcessor import WebRecipeProcessor
 from TextRecipeProcessor import TextRecipeProcessor
@@ -59,7 +58,7 @@ def handler(event, context):
                 "title": recipe.title,
                 "image": recipe.image,
                 "ingredients": [
-                    {"name": i.name, "quantity": i.quantity, "unit": i.unit}
+                    {"name": i.name, "quantity": i.quantity, "unit": i.unit, "emojiIcon": i.emojiIcon}
                     for i in recipe.ingredients
                 ],
                 "instructions": recipe.instructions

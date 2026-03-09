@@ -100,14 +100,16 @@ class WebRecipeProcessor:
                     "content": """
 Extract recipe title, ingredients and instructions from the text.
 
-For each ingredient, split it into name, quantity, and unit.
+For each ingredient, split it into name, quantity, unit, and emojiIcon.
+- Provide an emojiIcon that best represents the ingredient (e.g. "🧄" for garlic, "🥚" for egg)
+- If you cannot find a suitable emoji, default to "🍽️"
 
 Return JSON exactly like:
 {
   "title": "",
   "ingredients": [
-    { "name": "all-purpose flour", "quantity": "1.5", "unit": "cups" },
-    { "name": "egg", "quantity": "1", "unit": null }
+    { "name": "all-purpose flour", "quantity": "1.5", "unit": "cups", "emojiIcon": "🌾" },
+    { "name": "egg", "quantity": "1", "unit": null, "emojiIcon": "🥚" }
   ],
   "instructions": ["...", "...", "..."]
 }
@@ -133,7 +135,8 @@ Rules:
                 Ingredient(
                     name=i.get("name", ""),
                     quantity=i.get("quantity"),
-                    unit=i.get("unit")
+                    unit=i.get("unit"),
+                    emojiIcon=i.get("emojiIcon")
                 )
                 for i in ingredients_raw
             ]
@@ -146,13 +149,15 @@ Rules:
                 {
                     "role": "system",
                     "content": """
-Split each ingredient string into name, quantity, and unit.
+Split each ingredient string into name, quantity, unit, and emojiIcon.
+- Provide an emojiIcon that best represents the ingredient (e.g. "🧄" for garlic, "🥚" for egg)
+- If you cannot find a suitable emoji, default to "🍽️"
 
 Return JSON exactly like:
 {
   "ingredients": [
-    { "name": "all-purpose flour", "quantity": "1.5", "unit": "cups" },
-    { "name": "egg", "quantity": "1", "unit": null }
+    { "name": "all-purpose flour", "quantity": "1.5", "unit": "cups", "emojiIcon": "🌾" },
+    { "name": "egg", "quantity": "1", "unit": null, "emojiIcon": "🥚" }
   ]
 }
 """
@@ -165,7 +170,8 @@ Return JSON exactly like:
             Ingredient(
                 name=i.get("name", ""),
                 quantity=i.get("quantity"),
-                unit=i.get("unit")
+                unit=i.get("unit"),
+                emojiIcon=i.get("emojiIcon")
             )
             for i in structured
         ]

@@ -43,11 +43,14 @@ def test_full_pipeline():
     assert len(recipe.instructions) > 0
     assert recipe.image is not None
 
+    for ingredient in recipe.ingredients:
+        assert ingredient.emojiIcon is not None, f"Missing emojiIcon for: {ingredient.name}"
+
     print(json.dumps({
         "title": recipe.title,
         "image": recipe.image,
         "ingredients": [
-            {"name": i.name, "quantity": i.quantity, "unit": i.unit}
+            {"name": i.name, "quantity": i.quantity, "unit": i.unit, "emojiIcon": i.emojiIcon}
             for i in recipe.ingredients
         ],
         "instructions": recipe.instructions
@@ -132,6 +135,24 @@ def test_no_step_prefixes():
 
 
 # -----------------------------
+# Test 5: All ingredients have emojiIcon
+# -----------------------------
+def test_emoji_icons():
+    print("\n" + "=" * 50)
+    print("test_emoji_icons")
+    print("=" * 50)
+
+    processor = build_processor()
+    recipe = processor.process(TIKTOK_URL)
+
+    for ingredient in recipe.ingredients:
+        assert ingredient.emojiIcon is not None, f"Missing emojiIcon for: {ingredient.name}"
+        print(f"{ingredient.emojiIcon} {ingredient.name}")
+
+    print("\n✅ test_emoji_icons passed")
+
+
+# -----------------------------
 # Main
 # -----------------------------
 if __name__ == "__main__":
@@ -139,3 +160,4 @@ if __name__ == "__main__":
     test_lambda_function_error()
     test_lambda_non_200_status()
     test_no_step_prefixes()
+    test_emoji_icons()

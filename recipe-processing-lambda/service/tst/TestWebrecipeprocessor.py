@@ -43,7 +43,7 @@ def test_schema_recipe():
         "title": recipe.title,
         "image": recipe.image,
         "ingredients": [
-            {"name": i.name, "quantity": i.quantity, "unit": i.unit}
+            {"name": i.name, "quantity": i.quantity, "unit": i.unit, "emojiIcon": i.emojiIcon}
             for i in recipe.ingredients
         ],
         "instructions": recipe.instructions
@@ -109,7 +109,25 @@ def test_ingredients_are_structured():
 
 
 # -----------------------------
-# Test 5: AI fallback (live - site with no Schema.org)
+# Test 5: All ingredients have emojiIcon
+# -----------------------------
+def test_emoji_icons():
+    print("\n" + "=" * 50)
+    print("test_emoji_icons")
+    print("=" * 50)
+
+    processor = build_processor()
+    recipe = processor.process(SCHEMA_URL)
+
+    for ingredient in recipe.ingredients:
+        assert ingredient.emojiIcon is not None, f"Missing emojiIcon for: {ingredient.name}"
+        print(f"{ingredient.emojiIcon} {ingredient.name}")
+
+    print("\n✅ test_emoji_icons passed")
+
+
+# -----------------------------
+# Test 6: AI fallback (live - site with no Schema.org)
 # -----------------------------
 def test_ai_fallback():
     print("\n" + "=" * 50)
@@ -128,7 +146,7 @@ def test_ai_fallback():
         "title": recipe.title,
         "image": recipe.image,
         "ingredients": [
-            {"name": i.name, "quantity": i.quantity, "unit": i.unit}
+            {"name": i.name, "quantity": i.quantity, "unit": i.unit, "emojiIcon": i.emojiIcon}
             for i in recipe.ingredients
         ],
         "instructions": recipe.instructions
@@ -145,4 +163,5 @@ if __name__ == "__main__":
     test_no_step_prefixes()
     test_invalid_url()
     test_ingredients_are_structured()
+    test_emoji_icons()
     # test_ai_fallback()  # uncomment to test AI fallback path

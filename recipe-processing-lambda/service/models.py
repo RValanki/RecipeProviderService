@@ -7,6 +7,7 @@ class Ingredient:
     name: str
     quantity: Optional[str] = None
     unit: Optional[str] = None
+    emojiIcon: Optional[str] = None
 
 
 @dataclass
