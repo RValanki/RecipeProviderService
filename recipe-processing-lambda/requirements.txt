@@ -2,3 +2,5 @@ openai
 requests
 yt-dlp
 beautifulsoup4
+google-cloud-firestore
+google-auth

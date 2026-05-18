@@ -2,15 +2,16 @@ import boto3
 import json
 
 FUNCTION_NAME = "RecipeStack-RecipeProcessorE3C6647C-JuxFqvSBHSNc"
+TEST_USER_ID = "bYczDYp4fFdeVqfPtEUOG775ZZy1"
 
 
-def invoke_recipe_processor(user_input: str) -> dict:
+def invoke_recipe_processor(user_input: str, user_id: str) -> dict:
     client = boto3.client("lambda", region_name="ap-southeast-2")
 
     response = client.invoke(
         FunctionName=FUNCTION_NAME,
         InvocationType="RequestResponse",
-        Payload=json.dumps({"input": user_input})
+        Payload=json.dumps({"input": user_input, "userId": user_id})
     )
 
     payload = json.loads(response["Payload"].read())
@@ -43,5 +44,5 @@ if __name__ == "__main__":
     print("Processing...")
     print()
 
-    recipe = invoke_recipe_processor(user_input)
+    recipe = invoke_recipe_processor(user_input, TEST_USER_ID)
     print(json.dumps(recipe, indent=2, ensure_ascii=False))
