@@ -5,9 +5,11 @@ from typing import List, Optional
 @dataclass
 class Ingredient:
     name: str
-    quantity: Optional[str] = None
+    emoji: str
+    quantity: Optional[float] = None
     unit: Optional[str] = None
-    emojiIcon: Optional[str] = None
+    totalGram: Optional[float] = None
+    gramPerUnit: Optional[float] = None
 
 
 @dataclass

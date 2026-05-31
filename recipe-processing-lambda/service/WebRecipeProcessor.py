@@ -4,10 +4,44 @@ import logging
 import requests
 from bs4 import BeautifulSoup
 from openai import OpenAI
-from models import Ingredient, TikTokRecipeProcessorService
+from models import TikTokRecipeProcessorService
+from TikTokRecipeProcessor import INGREDIENT_PROMPT, parse_ingredients
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+WEB_FALLBACK_PROMPT = INGREDIENT_PROMPT + """
+Also extract the recipe title and include it in the response.
+
+Return JSON exactly like:
+{
+  "title": "",
+  "ingredients": [...],
+  "instructions": [...]
+}
+"""
+
+WEB_STRUCTURE_PROMPT = """
+Split each ingredient string into name, emoji, quantity, unit, totalGram, and gramPerUnit.
+
+Rules:
+- emoji: a single relevant food emoji for the ingredient — use your best guess (e.g. "🧄" for garlic, "🥚" for egg, "🍗" for chicken). Default to "🍽️" only if no better emoji exists
+- quantity must be a number (e.g. 1.5), never a string — if unknown use your culinary knowledge to infer a typical quantity
+- unit: always use the most appropriate culinary unit (tsp, tbsp, cups, ml, g, cloves etc.) — NEVER use "pcs" for spices, liquids or powders. Only use "pcs" for whole countable items like eggs or whole chicken thighs
+- totalGram: ALWAYS provide your best gram estimate — never null. Use culinary knowledge:
+    1 tsp ground spice ≈ 3g, 1 tbsp ≈ 9g, 1 cup flour ≈ 120g, 1 cup liquid ≈ 240g,
+    1 tbsp oil ≈ 14g, 1 tbsp butter ≈ 14g, 1 clove garlic ≈ 3g, 1 large egg ≈ 50g,
+    1 tbsp honey ≈ 21g, 1 tbsp soy sauce ≈ 17g, 1 cup broth ≈ 240g
+- gramPerUnit: ALWAYS provide the gram weight of one single unit — never null
+
+Return JSON exactly like:
+{
+  "ingredients": [
+    { "name": "garlic", "emoji": "🧄", "quantity": 2, "unit": "cloves", "totalGram": 6.0, "gramPerUnit": 3.0 },
+    { "name": "salt", "emoji": "🧂", "quantity": 1, "unit": "tsp", "totalGram": 6.0, "gramPerUnit": 6.0 }
+  ]
+}
+"""
 
 
 class WebRecipeProcessor:
@@ -15,14 +49,10 @@ class WebRecipeProcessor:
     def __init__(self, api_key: str):
         self.client = OpenAI(api_key=api_key)
 
-    # -----------------------------
-    # 1️⃣ Get recipe image
-    # -----------------------------
     def get_recipe_image(self, soup) -> str | None:
         og_image = soup.find("meta", property="og:image")
         if og_image:
             return og_image.get("content")
-
         scripts = soup.find_all("script", type="application/ld+json")
         for script in scripts:
             try:
@@ -36,42 +66,31 @@ class WebRecipeProcessor:
                     if isinstance(image, dict):
                         return image.get("url")
                     return image
-            except:
+            except Exception as e:
+                logger.debug(f"Skipping LD+JSON block: {e}")
                 continue
-
         return None
 
-    # -----------------------------
-    # 2️⃣ Extract Schema.org recipe
-    # -----------------------------
     def extract_schema_recipe(self, html: str) -> dict | None:
         soup = BeautifulSoup(html, "html.parser")
         scripts = soup.find_all("script", type="application/ld+json")
-
         for script in scripts:
             try:
                 data = json.loads(script.string)
-
                 if isinstance(data, list):
                     for item in data:
                         if item.get("@type") == "Recipe":
                             return self.parse_recipe(item)
-
                 if data.get("@type") == "Recipe":
                     return self.parse_recipe(data)
-
-            except:
+            except Exception as e:
+                logger.debug(f"Skipping LD+JSON block: {e}")
                 continue
-
         return None
 
-    # -----------------------------
-    # 3️⃣ Parse recipe fields
-    # -----------------------------
     def parse_recipe(self, recipe: dict) -> dict:
         title = recipe.get("name", "")
         ingredients_raw = recipe.get("recipeIngredient", [])
-
         instructions_raw = recipe.get("recipeInstructions", [])
         instructions = []
         for step in instructions_raw:
@@ -79,115 +98,44 @@ class WebRecipeProcessor:
                 instructions.append(step.get("text"))
             else:
                 instructions.append(step)
+        return {"title": title, "ingredients": ingredients_raw, "instructions": instructions}
 
-        return {
-            "title": title,
-            "ingredients": ingredients_raw,
-            "instructions": instructions
-        }
-
-    # -----------------------------
-    # 4️⃣ AI fallback
-    # -----------------------------
     def ai_fallback(self, text: str) -> dict:
         logger.info("Using AI fallback for recipe extraction")
         completion = self.client.chat.completions.create(
             model="gpt-4o-mini",
             response_format={"type": "json_object"},
             messages=[
-                {
-                    "role": "system",
-                    "content": """
-Extract recipe title, ingredients and instructions from the text.
-
-For each ingredient, split it into name, quantity, unit, and emojiIcon.
-- Provide an emojiIcon that best represents the ingredient (e.g. "🧄" for garlic, "🥚" for egg)
-- If you cannot find a suitable emoji, default to "🍽️"
-
-Return JSON exactly like:
-{
-  "title": "",
-  "ingredients": [
-    { "name": "all-purpose flour", "quantity": "1.5", "unit": "cups", "emojiIcon": "🌾" },
-    { "name": "egg", "quantity": "1", "unit": null, "emojiIcon": "🥚" }
-  ],
-  "instructions": ["...", "...", "..."]
-}
-
-Rules:
-- Return instructions as plain sentences, no "Step 1:", "Step 2:" prefixes
-"""
-                },
+                {"role": "system", "content": WEB_FALLBACK_PROMPT},
                 {"role": "user", "content": text[:15000]}
             ]
         )
         return json.loads(completion.choices[0].message.content)
 
-    # -----------------------------
-    # 5️⃣ Parse ingredients into Ingredient objects
-    # -----------------------------
-    def parse_ingredients(self, ingredients_raw: list) -> list[Ingredient]:
+    def parse_ingredients(self, ingredients_raw: list) -> list:
         if not ingredients_raw:
             return []
 
         if isinstance(ingredients_raw[0], dict):
-            return [
-                Ingredient(
-                    name=i.get("name", ""),
-                    quantity=i.get("quantity"),
-                    unit=i.get("unit"),
-                    emojiIcon=i.get("emojiIcon")
-                )
-                for i in ingredients_raw
-            ]
+            return parse_ingredients(ingredients_raw)
 
         logger.info("Structuring plain string ingredients via OpenAI")
         completion = self.client.chat.completions.create(
             model="gpt-4o-mini",
             response_format={"type": "json_object"},
             messages=[
-                {
-                    "role": "system",
-                    "content": """
-Split each ingredient string into name, quantity, unit, and emojiIcon.
-- Provide an emojiIcon that best represents the ingredient (e.g. "🧄" for garlic, "🥚" for egg)
-- If you cannot find a suitable emoji, default to "🍽️"
-
-Return JSON exactly like:
-{
-  "ingredients": [
-    { "name": "all-purpose flour", "quantity": "1.5", "unit": "cups", "emojiIcon": "🌾" },
-    { "name": "egg", "quantity": "1", "unit": null, "emojiIcon": "🥚" }
-  ]
-}
-"""
-                },
+                {"role": "system", "content": WEB_STRUCTURE_PROMPT},
                 {"role": "user", "content": json.dumps(ingredients_raw)}
             ]
         )
         structured = json.loads(completion.choices[0].message.content).get("ingredients", [])
-        return [
-            Ingredient(
-                name=i.get("name", ""),
-                quantity=i.get("quantity"),
-                unit=i.get("unit"),
-                emojiIcon=i.get("emojiIcon")
-            )
-            for i in structured
-        ]
+        return parse_ingredients(structured)
 
-    # -----------------------------
-    # 6️⃣ Strip step prefixes defensively
-    # -----------------------------
     def strip_step_prefixes(self, instructions: list[str]) -> list[str]:
         return [re.sub(r"^Step\s*\d+:\s*", "", step) for step in instructions]
 
-    # -----------------------------
-    # 7️⃣ Full pipeline
-    # -----------------------------
     def process(self, url: str) -> TikTokRecipeProcessorService:
         logger.info(f"Processing web URL: {url}")
-
         try:
             headers = {"User-Agent": "Mozilla/5.0"}
             response = requests.get(url, headers=headers, timeout=15)
@@ -213,7 +161,6 @@ Return JSON exactly like:
 
         ingredients = self.parse_ingredients(raw.get("ingredients", []))
         instructions = self.strip_step_prefixes(raw.get("instructions", []))
-
         logger.info(f"Successfully processed recipe: {raw.get('title', '')}")
 
         return TikTokRecipeProcessorService(

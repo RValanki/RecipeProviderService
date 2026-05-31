@@ -9,6 +9,54 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+INGREDIENT_PROMPT = """
+You are a recipe extraction assistant. Extract a recipe from the provided text which may include a video title, caption, and spoken transcript from a cooking video.
+
+Rules:
+- Instructions may be spoken conversationally — convert these into clean steps
+- If the transcript contains any cooking actions (cook, add, mix, heat, stir, etc.), turn them into instructions
+- Infer logical steps if the transcript is incomplete but ingredients are mentioned
+- Never return an empty instructions array if there is any cooking-related content
+- Return instructions as plain sentences, no "Step 1:", "Step 2:" prefixes
+- For each ingredient provide:
+  - name: the ingredient name
+  - emoji: a single relevant food emoji for the ingredient — use your best guess (e.g. "🧄" for garlic, "🥚" for egg, "🍗" for chicken). Default to "🍽️" only if no better emoji exists
+  - quantity: the amount as a number — if not mentioned, use your culinary knowledge to infer a typical quantity for the recipe context
+  - unit: always use the most appropriate culinary unit (tsp, tbsp, cups, ml, g, cloves, pieces etc.) — NEVER use "pcs" for spices, liquids, powders, or anything with a standard culinary unit. Only use "pcs" for whole countable items like eggs or whole chicken thighs
+  - totalGram: ALWAYS provide your best gram estimate — never null. Use culinary knowledge to estimate:
+      1 tsp ground spice ≈ 3g, 1 tbsp ≈ 9g, 1 cup flour ≈ 120g, 1 cup liquid ≈ 240g,
+      1 tbsp oil ≈ 14g, 1 tbsp butter ≈ 14g, 1 clove garlic ≈ 3g, 1 large egg ≈ 50g,
+      1 tbsp honey ≈ 21g, 1 tbsp soy sauce ≈ 17g, 1 cup broth ≈ 240g
+  - gramPerUnit: ALWAYS provide the gram weight of one single unit — never null. Same inference rules apply.
+
+Return JSON exactly like:
+{
+  "ingredients": [
+    { "name": "smoked paprika", "emoji": "🌶️", "quantity": 1, "unit": "tbsp", "totalGram": 9.0, "gramPerUnit": 9.0 },
+    { "name": "garlic", "emoji": "🧄", "quantity": 2, "unit": "cloves", "totalGram": 6.0, "gramPerUnit": 3.0 },
+    { "name": "chicken breast", "emoji": "🍗", "quantity": 500, "unit": "g", "totalGram": 500.0, "gramPerUnit": 1.0 },
+    { "name": "honey", "emoji": "🍯", "quantity": 0.25, "unit": "cups", "totalGram": 85.0, "gramPerUnit": 340.0 },
+    { "name": "egg", "emoji": "🥚", "quantity": 2, "unit": "pcs", "totalGram": 100.0, "gramPerUnit": 50.0 }
+  ],
+  "instructions": ["...", "...", "..."]
+}
+"""
+
+
+def parse_ingredients(raw: list) -> list[Ingredient]:
+    return [
+        Ingredient(
+            name=i.get("name", ""),
+            emoji=i.get("emoji", "🍽️"),
+            quantity=float(i["quantity"]) if i.get("quantity") is not None else None,
+            unit=i.get("unit"),
+            totalGram=float(i["totalGram"]) if i.get("totalGram") is not None else None,
+            gramPerUnit=float(i["gramPerUnit"]) if i.get("gramPerUnit") is not None else None
+        )
+        for i in raw
+    ]
+
+
 class TikTokRecipeProcessor:
 
     def __init__(self, api_key: str, media_lambda_name: str):
@@ -16,35 +64,20 @@ class TikTokRecipeProcessor:
         self.lambda_client = boto3.client("lambda")
         self.media_lambda_name = media_lambda_name
 
-    # -----------------------------
-    # 1️⃣ Invoke TikTokMediaProcessor Lambda
-    # -----------------------------
     def invoke_media_processor(self, url: str) -> dict:
         logger.info(f"Invoking media processor Lambda for URL: {url}")
-
         response = self.lambda_client.invoke(
             FunctionName=self.media_lambda_name,
             InvocationType="RequestResponse",
             Payload=json.dumps({"url": url})
         )
-
         payload = json.loads(response["Payload"].read())
-
         if response.get("FunctionError"):
-            error = payload.get("errorMessage", "Unknown Lambda error")
-            logger.error(f"Media processor Lambda failed: {error}")
-            raise RuntimeError(f"Media processor Lambda failed: {error}")
-
+            raise RuntimeError(f"Media processor Lambda failed: {payload.get('errorMessage', 'Unknown error')}")
         if payload.get("statusCode") != 200:
-            error = json.loads(payload.get("body", "{}")).get("error", "Unknown error")
-            logger.error(f"Media processor returned error: {error}")
-            raise RuntimeError(f"Media processor returned error: {error}")
-
+            raise RuntimeError(f"Media processor returned error: {json.loads(payload.get('body', '{}')).get('error', 'Unknown error')}")
         return json.loads(payload["body"])
 
-    # -----------------------------
-    # 2️⃣ Combine text sources
-    # -----------------------------
     def combine_text(self, title: str, description: str, transcript: str) -> str:
         return f"""
 TIKTOK TITLE:
@@ -60,9 +93,6 @@ Use all three sources to extract the most accurate recipe possible.
 If ingredients or instructions appear in any section, include them.
 """
 
-    # -----------------------------
-    # 3️⃣ Normalize recipe title
-    # -----------------------------
     def normalize_recipe_title(self, raw_title: str) -> str:
         logger.info("Normalizing recipe title")
         completion = self.client.chat.completions.create(
@@ -73,7 +103,6 @@ If ingredients or instructions appear in any section, include them.
                     "content": """
 You are given a raw TikTok video title for a cooking video.
 Extract and return only the clean, standard recipe name.
-
 Rules:
 - Remove hashtags, emojis, filler phrases like "the best", "easy", "you need to try this"
 - Remove creator names or personal commentary
@@ -86,59 +115,24 @@ Rules:
         )
         return completion.choices[0].message.content.strip()
 
-    # -----------------------------
-    # 4️⃣ Extract recipe JSON
-    # -----------------------------
     def extract_recipe_from_text(self, text: str) -> dict:
         logger.info("Extracting recipe from text")
         completion = self.client.chat.completions.create(
             model="gpt-4o-mini",
             response_format={"type": "json_object"},
             messages=[
-                {
-                    "role": "system",
-                    "content": """
-You are a recipe extraction assistant. Extract a recipe from the provided text which may include a video title, caption, and spoken transcript from a cooking video.
-
-Rules:
-- Instructions may be spoken conversationally (e.g. "first you caramelize the onions") — convert these into clean steps
-- If the transcript contains any cooking actions (cook, add, mix, heat, stir, etc.), turn them into instructions
-- Infer logical steps if the transcript is incomplete but ingredients are mentioned
-- Never return an empty instructions array if there is any cooking-related content
-- For each ingredient, split it into name, quantity, and unit
-- For each ingredient, also provide an emojiIcon that best represents it (e.g. "🧄" for garlic, "🥚" for egg)
-- If you cannot find a suitable emoji for an ingredient, default to "🍽️"
-- Return instructions as plain sentences, no "Step 1:", "Step 2:" prefixes
-
-Return JSON exactly like:
-{
-  "ingredients": [
-    { "name": "all-purpose flour", "quantity": "1.5", "unit": "cups", "emojiIcon": "🌾" },
-    { "name": "egg", "quantity": "1", "unit": null, "emojiIcon": "🥚" }
-  ],
-  "instructions": ["...", "...", "..."]
-}
-"""
-                },
+                {"role": "system", "content": INGREDIENT_PROMPT},
                 {"role": "user", "content": text[:12000]}
             ]
         )
         return json.loads(completion.choices[0].message.content)
 
-    # -----------------------------
-    # 5️⃣ Strip step prefixes defensively
-    # -----------------------------
     def strip_step_prefixes(self, instructions: list[str]) -> list[str]:
         return [re.sub(r"^Step\s*\d+:\s*", "", step) for step in instructions]
 
-    # -----------------------------
-    # Full pipeline
-    # -----------------------------
     def process(self, url: str) -> TikTokRecipeProcessorService:
         logger.info(f"Processing TikTok URL: {url}")
-
         media_payload = self.invoke_media_processor(url)
-
         title = media_payload.get("title", "")
         description = media_payload.get("description", "")
         transcript = media_payload.get("transcript", "")
@@ -148,18 +142,8 @@ Return JSON exactly like:
         raw_recipe = self.extract_recipe_from_text(combined_text)
         normalized_title = self.normalize_recipe_title(title)
 
-        ingredients = [
-            Ingredient(
-                name=i.get("name", ""),
-                quantity=i.get("quantity"),
-                unit=i.get("unit"),
-                emojiIcon=i.get("emojiIcon")
-            )
-            for i in raw_recipe.get("ingredients", [])
-        ]
-
+        ingredients = parse_ingredients(raw_recipe.get("ingredients", []))
         instructions = self.strip_step_prefixes(raw_recipe.get("instructions", []))
-
         logger.info(f"Successfully processed recipe: {normalized_title}")
 
         return TikTokRecipeProcessorService(
