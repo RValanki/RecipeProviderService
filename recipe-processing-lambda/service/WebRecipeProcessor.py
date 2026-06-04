@@ -25,6 +25,7 @@ WEB_STRUCTURE_PROMPT = """
 Split each ingredient string into name, emoji, quantity, unit, totalGram, and gramPerUnit.
 
 Rules:
+- name: the ingredient in its most basic, constituent form — no preparation descriptors (e.g. "garlic" not "crushed garlic", "chicken breast" not "diced chicken breast", "onion" not "finely chopped onion"). Strip all adjectives describing cut, texture, or preparation state.
 - emoji: a single relevant food emoji for the ingredient — use your best guess (e.g. "🧄" for garlic, "🥚" for egg, "🍗" for chicken). Default to "🍽️" only if no better emoji exists
 - quantity must be a number (e.g. 1.5), never a string — if unknown use your culinary knowledge to infer a typical quantity
 - unit: always use the most appropriate culinary unit (tsp, tbsp, cups, ml, g, cloves etc.) — NEVER use "pcs" for spices, liquids or powders. Only use "pcs" for whole countable items like eggs or whole chicken thighs

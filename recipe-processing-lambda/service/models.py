@@ -10,6 +10,7 @@ class Ingredient:
     unit: Optional[str] = None
     totalGram: Optional[float] = None
     gramPerUnit: Optional[float] = None
+    matchID: Optional[str] = None
 
 
 @dataclass

@@ -46,7 +46,8 @@ def _serialize_ingredient(i) -> dict:
     return {
         "name": i.name,
         "emoji": i.emoji,
-        "foodQuantity": food_quantity
+        "foodQuantity": food_quantity,
+        "matchID": i.name
     }
 
 

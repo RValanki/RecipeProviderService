@@ -19,7 +19,7 @@ Rules:
 - Never return an empty instructions array if there is any cooking-related content
 - Return instructions as plain sentences, no "Step 1:", "Step 2:" prefixes
 - For each ingredient provide:
-  - name: the ingredient name
+  - name: the ingredient in its most basic, constituent form — no preparation descriptors (e.g. "garlic" not "crushed garlic", "chicken breast" not "diced chicken breast", "onion" not "finely chopped onion"). Strip all adjectives describing cut, texture, or preparation state.
   - emoji: a single relevant food emoji for the ingredient — use your best guess (e.g. "🧄" for garlic, "🥚" for egg, "🍗" for chicken). Default to "🍽️" only if no better emoji exists
   - quantity: the amount as a number — if not mentioned, use your culinary knowledge to infer a typical quantity for the recipe context
   - unit: always use the most appropriate culinary unit (tsp, tbsp, cups, ml, g, cloves, pieces etc.) — NEVER use "pcs" for spices, liquids, powders, or anything with a standard culinary unit. Only use "pcs" for whole countable items like eggs or whole chicken thighs
