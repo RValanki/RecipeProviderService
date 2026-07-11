@@ -19,3 +19,4 @@ class TikTokRecipeProcessorService:
     ingredients: List[Ingredient]
     instructions: List[str]
     image: Optional[str] = None
+    totalTime: Optional[int] = None

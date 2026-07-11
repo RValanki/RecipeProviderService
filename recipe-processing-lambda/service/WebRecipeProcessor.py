@@ -16,6 +16,7 @@ Also extract the recipe title and include it in the response.
 Return JSON exactly like:
 {
   "title": "",
+  "totalTime": 45,
   "ingredients": [...],
   "instructions": [...]
 }
@@ -43,6 +44,19 @@ Return JSON exactly like:
   ]
 }
 """
+
+
+def _parse_iso8601_duration(duration: str | None) -> int | None:
+    """Parses schema.org durations like 'PT45M', 'PT1H30M' into total minutes."""
+    if not duration or not isinstance(duration, str):
+        return None
+    match = re.match(r'^P(?:\d+D)?T?(?:(\d+)H)?(?:(\d+)M)?$', duration)
+    if not match:
+        return None
+    hours, minutes = match.groups()
+    if not hours and not minutes:
+        return None
+    return (int(hours) * 60 if hours else 0) + (int(minutes) if minutes else 0)
 
 
 class WebRecipeProcessor:
@@ -99,7 +113,20 @@ class WebRecipeProcessor:
                 instructions.append(step.get("text"))
             else:
                 instructions.append(step)
-        return {"title": title, "ingredients": ingredients_raw, "instructions": instructions}
+
+        total_time = _parse_iso8601_duration(recipe.get("totalTime"))
+        if total_time is None:
+            prep = _parse_iso8601_duration(recipe.get("prepTime"))
+            cook = _parse_iso8601_duration(recipe.get("cookTime"))
+            if prep or cook:
+                total_time = (prep or 0) + (cook or 0)
+
+        return {
+            "title": title,
+            "ingredients": ingredients_raw,
+            "instructions": instructions,
+            "totalTime": total_time
+        }
 
     def ai_fallback(self, text: str) -> dict:
         logger.info("Using AI fallback for recipe extraction")
@@ -112,6 +139,30 @@ class WebRecipeProcessor:
             ]
         )
         return json.loads(completion.choices[0].message.content)
+
+    def estimate_total_time(self, title: str, ingredients_raw: list, instructions: list[str]) -> int:
+        logger.info("No totalTime found in schema data — estimating via AI")
+        completion = self.client.chat.completions.create(
+            model="gpt-4o-mini",
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": """
+You are a culinary assistant. Given a recipe title, ingredients, and instructions,
+estimate the total time (prep + cook) to make it, in minutes, as an integer.
+Return JSON exactly like: {"totalTime": 45}
+"""
+                },
+                {"role": "user", "content": json.dumps({
+                    "title": title,
+                    "ingredients": ingredients_raw,
+                    "instructions": instructions
+                })}
+            ]
+        )
+        result = json.loads(completion.choices[0].message.content)
+        return result.get("totalTime", 30)
 
     def parse_ingredients(self, ingredients_raw: list) -> list:
         if not ingredients_raw:
@@ -162,11 +213,17 @@ class WebRecipeProcessor:
 
         ingredients = self.parse_ingredients(raw.get("ingredients", []))
         instructions = self.strip_step_prefixes(raw.get("instructions", []))
+
+        total_time = raw.get("totalTime")
+        if total_time is None:
+            total_time = self.estimate_total_time(raw.get("title", ""), raw.get("ingredients", []), instructions)
+
         logger.info(f"Successfully processed recipe: {raw.get('title', '')}")
 
         return TikTokRecipeProcessorService(
             title=raw.get("title", ""),
             ingredients=ingredients,
             instructions=instructions,
-            image=image
+            image=image,
+            totalTime=total_time
         )

@@ -83,6 +83,7 @@ def handler(event, context):
         recipe_data = {
             "title": recipe.title,
             "image": recipe.image,
+            "totalTime": recipe.totalTime,
             "ingredients": [_serialize_ingredient(i) for i in recipe.ingredients],
             "instructions": recipe.instructions
         }

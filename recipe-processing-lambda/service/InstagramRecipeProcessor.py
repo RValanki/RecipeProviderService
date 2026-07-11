@@ -103,5 +103,6 @@ Rules:
             title=normalized_title,
             ingredients=ingredients,
             instructions=instructions,
-            image=thumbnail_url
+            image=thumbnail_url,
+            totalTime=raw_recipe.get("totalTime")
         )

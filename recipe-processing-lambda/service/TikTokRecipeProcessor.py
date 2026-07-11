@@ -18,6 +18,9 @@ Rules:
 - Infer logical steps if the transcript is incomplete but ingredients are mentioned
 - Never return an empty instructions array if there is any cooking-related content
 - Return instructions as plain sentences, no "Step 1:", "Step 2:" prefixes
+- totalTime: the total time (prep + cook) to make this recipe, in minutes, as an integer.
+  If the video/text does not explicitly state a time, use your culinary knowledge to estimate
+  a realistic total time based on the ingredients and steps involved. Never return null.
 - For each ingredient provide:
   - name: the ingredient in its most basic, constituent form — no preparation descriptors (e.g. "garlic" not "crushed garlic", "chicken breast" not "diced chicken breast", "onion" not "finely chopped onion"). Strip all adjectives describing cut, texture, or preparation state.
   - emoji: a single relevant food emoji for the ingredient — use your best guess (e.g. "🧄" for garlic, "🥚" for egg, "🍗" for chicken). Default to "🍽️" only if no better emoji exists
@@ -31,6 +34,7 @@ Rules:
 
 Return JSON exactly like:
 {
+  "totalTime": 45,
   "ingredients": [
     { "name": "smoked paprika", "emoji": "🌶️", "quantity": 1, "unit": "tbsp", "totalGram": 9.0, "gramPerUnit": 9.0 },
     { "name": "garlic", "emoji": "🧄", "quantity": 2, "unit": "cloves", "totalGram": 6.0, "gramPerUnit": 3.0 },
@@ -150,5 +154,6 @@ Rules:
             title=normalized_title,
             ingredients=ingredients,
             instructions=instructions,
-            image=thumbnail_url
+            image=thumbnail_url,
+            totalTime=raw_recipe.get("totalTime")
         )

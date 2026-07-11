@@ -1,3 +1,4 @@
+import re
 import json
 import logging
 from openai import OpenAI
@@ -13,6 +14,7 @@ Also extract the recipe title and include it in the response.
 Return JSON exactly like:
 {
   "title": "",
+  "totalTime": 45,
   "ingredients": [...],
   "instructions": [...]
 }
@@ -36,16 +38,21 @@ class TextRecipeProcessor:
         )
         return json.loads(completion.choices[0].message.content)
 
+    def strip_step_prefixes(self, instructions: list[str]) -> list[str]:
+        return [re.sub(r"^Step\s*\d+:\s*", "", step) for step in instructions]
+
     def process(self, text_chunk: str) -> TikTokRecipeProcessorService:
         logger.info("Processing text recipe")
         raw = self.extract_recipe_from_text(text_chunk)
         title = raw.get("title", "")
         ingredients = parse_ingredients(raw.get("ingredients", []))
+        instructions = self.strip_step_prefixes(raw.get("instructions", []))
         logger.info(f"Successfully processed recipe: {title}")
 
         return TikTokRecipeProcessorService(
             title=title,
             ingredients=ingredients,
-            instructions=raw.get("instructions", []),
-            image=None
+            instructions=instructions,
+            image=None,
+            totalTime=raw.get("totalTime")
         )
