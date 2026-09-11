@@ -57,9 +57,13 @@ def handler(event, context):
             body = json.loads(event["body"]) if isinstance(event["body"], str) else event["body"]
             user_input = body.get("input")
             user_id = body.get("userId")
+            source_url = body.get("sourceURL")
+            request_id = body.get("requestId")
         else:
             user_input = event.get("input")
             user_id = event.get("userId")
+            source_url = event.get("sourceURL")
+            request_id = event.get("requestId")
 
         if not user_input:
             return {"statusCode": 400, "body": json.dumps({"error": "Missing 'input' in request"})}
@@ -68,6 +72,11 @@ def handler(event, context):
 
         input_type, user_input = detect_input_type(user_input)
         logger.info(f"Detected input type: {input_type}, resolved input: {user_input}")
+
+        # Fall back to the detected URL if the client didn't send one explicitly
+        # (older app versions). Stays None for plain-text imports.
+        if not source_url and input_type != "text":
+            source_url = user_input
 
         if input_type == "tiktok":
             processor = TikTokRecipeProcessor(api_key=OPENAI_API_KEY, media_lambda_name=MEDIA_LAMBDA_NAME)
@@ -85,7 +94,9 @@ def handler(event, context):
             "image": recipe.image,
             "totalTime": recipe.totalTime,
             "ingredients": [_serialize_ingredient(i) for i in recipe.ingredients],
-            "instructions": recipe.instructions
+            "instructions": recipe.instructions,
+            "sourceURL": source_url,   # optional — null for plain-text imports
+            "requestId": request_id    # echo back so the client can match the result
         }
 
         write_recipe_ready_event(user_id=user_id, recipe_data=recipe_data)

@@ -89,26 +89,36 @@ class TikTokMediaProcessor:
                 print(f"[cleanup] Deleted {file}")
 
     # -----------------------------
-    # Full pipeline — returns raw text payload for recipe processor
+    # Metadata only — fast path (no download/transcription)
     # -----------------------------
-    def process(self, url: str) -> dict:
+    def process_metadata(self, url: str) -> dict:
+        title, description = self.get_tiktok_metadata(url)
+        thumbnail_url = self.get_tiktok_display_thumbnail(url)
+        return {
+            "title": title,
+            "description": description,
+            "thumbnail_url": thumbnail_url
+        }
+
+    # -----------------------------
+    # Transcription only — slow path (download + audio + transcribe)
+    # -----------------------------
+    def process_transcription(self, url: str) -> dict:
         unique_id = uuid.uuid4().hex
         video_file = None
         audio_file = None
 
         try:
-            title, description = self.get_tiktok_metadata(url)
             video_file = self.download_tiktok(url, unique_id)
             audio_file = self.extract_audio(video_file, unique_id)
             transcript = self.transcribe_audio(audio_file)
-            thumbnail_url = self.get_tiktok_display_thumbnail(url)
-
-            return {
-                "title": title,
-                "description": description,
-                "transcript": transcript,
-                "thumbnail_url": thumbnail_url
-            }
+            return {"transcript": transcript}
 
         finally:
             self.cleanup(video_file, audio_file)
+
+    # -----------------------------
+    # Full pipeline — metadata + transcript (backward compatible)
+    # -----------------------------
+    def process(self, url: str) -> dict:
+        return {**self.process_metadata(url), **self.process_transcription(url)}

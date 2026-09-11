@@ -21,12 +21,18 @@ def handler(event, context):
         print(f"[debug] COOKIES_BUCKET={COOKIES_BUCKET}, COOKIES_KEY={COOKIES_KEY}")
         print(f"[debug] cookies file exists: {os.path.exists('/tmp/instagram_cookies.txt')}")
 
+        mode = event.get("mode", "full")
         processor = InstagramMediaProcessor(
             api_key=OPENAI_API_KEY,
             cookies_bucket=COOKIES_BUCKET,
             cookies_key=COOKIES_KEY
         )
-        media_payload = processor.process(url)
+        if mode == "metadata":
+            media_payload = processor.process_metadata(url)
+        elif mode == "transcribe":
+            media_payload = processor.process_transcription(url)
+        else:
+            media_payload = processor.process(url)
 
         return {
             "statusCode": 200,

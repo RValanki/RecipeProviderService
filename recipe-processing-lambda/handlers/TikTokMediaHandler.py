@@ -15,8 +15,14 @@ def handler(event, context):
                 "body": json.dumps({"error": "Missing 'url' in request"})
             }
 
+        mode = event.get("mode", "full")
         processor = TikTokMediaProcessor(api_key=OPENAI_API_KEY)
-        media_payload = processor.process(url)
+        if mode == "metadata":
+            media_payload = processor.process_metadata(url)
+        elif mode == "transcribe":
+            media_payload = processor.process_transcription(url)
+        else:
+            media_payload = processor.process(url)
 
         return {
             "statusCode": 200,

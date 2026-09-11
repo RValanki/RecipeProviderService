@@ -2,6 +2,7 @@ import re
 import json
 import boto3
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from openai import OpenAI
 from models import Ingredient, TikTokRecipeProcessorService
 
@@ -47,6 +48,22 @@ Return JSON exactly like:
 """
 
 
+CAPTION_EXTRACT_PROMPT = INGREDIENT_PROMPT + """
+
+IMPORTANT — the text you are given is ONLY the CAPTION of a cooking video. It may or may not contain the actual recipe.
+
+First decide whether the caption contains a REAL, usable recipe — it must list ingredients AND at least one preparation/cooking step (or instructions clear enough to actually cook the dish).
+
+- If it does NOT contain a usable recipe (e.g. it is just a hook, hashtags, "full recipe below", a vibe caption, or only names the dish), return EXACTLY:
+  {"recipe": null}
+
+- If it DOES contain a usable recipe, also extract the recipe title, and wrap it like:
+  {"recipe": {"title": "", "totalTime": 45, "ingredients": [...], "instructions": [...]}}
+
+Return only JSON, nothing else.
+"""
+
+
 def parse_ingredients(raw: list) -> list[Ingredient]:
     return [
         Ingredient(
@@ -68,12 +85,12 @@ class TikTokRecipeProcessor:
         self.lambda_client = boto3.client("lambda")
         self.media_lambda_name = media_lambda_name
 
-    def invoke_media_processor(self, url: str) -> dict:
-        logger.info(f"Invoking media processor Lambda for URL: {url}")
+    def invoke_media_processor(self, url: str, mode: str = "full") -> dict:
+        logger.info(f"Invoking media processor Lambda (mode={mode}) for URL: {url}")
         response = self.lambda_client.invoke(
             FunctionName=self.media_lambda_name,
             InvocationType="RequestResponse",
-            Payload=json.dumps({"url": url})
+            Payload=json.dumps({"url": url, "mode": mode})
         )
         payload = json.loads(response["Payload"].read())
         if response.get("FunctionError"):
@@ -131,29 +148,61 @@ Rules:
         )
         return json.loads(completion.choices[0].message.content)
 
+    def extract_recipe_from_caption(self, caption: str) -> dict | None:
+        """Extract a recipe from the caption alone. Returns None if the caption
+        does not contain a usable recipe (model returns {"recipe": null})."""
+        logger.info("Attempting recipe extraction from caption")
+        completion = self.client.chat.completions.create(
+            model="gpt-4o-mini",
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": CAPTION_EXTRACT_PROMPT},
+                {"role": "user", "content": caption[:12000]}
+            ]
+        )
+        return json.loads(completion.choices[0].message.content).get("recipe")
+
     def strip_step_prefixes(self, instructions: list[str]) -> list[str]:
         return [re.sub(r"^Step\s*\d+:\s*", "", step) for step in instructions]
 
     def process(self, url: str) -> TikTokRecipeProcessorService:
         logger.info(f"Processing TikTok URL: {url}")
-        media_payload = self.invoke_media_processor(url)
-        title = media_payload.get("title", "")
-        description = media_payload.get("description", "")
-        transcript = media_payload.get("transcript", "")
-        thumbnail_url = media_payload.get("thumbnail_url")
 
-        combined_text = self.combine_text(title, description, transcript)
-        raw_recipe = self.extract_recipe_from_text(combined_text)
-        normalized_title = self.normalize_recipe_title(title)
+        # Start transcription (download + audio + Whisper) in parallel so it's
+        # ready if the caption turns out not to hold the recipe. Fetch the
+        # lightweight metadata (incl. caption) on this thread meanwhile.
+        executor = ThreadPoolExecutor(max_workers=1)
+        transcript_future = executor.submit(self.invoke_media_processor, url, "transcribe")
+        try:
+            meta = self.invoke_media_processor(url, "metadata")
+            title = meta.get("title", "")
+            description = meta.get("description", "")
+            thumbnail_url = meta.get("thumbnail_url")
 
-        ingredients = parse_ingredients(raw_recipe.get("ingredients", []))
-        instructions = self.strip_step_prefixes(raw_recipe.get("instructions", []))
-        logger.info(f"Successfully processed recipe: {normalized_title}")
+            raw_recipe = None
+            if description and description.strip():
+                raw_recipe = self.extract_recipe_from_caption(description)
 
-        return TikTokRecipeProcessorService(
-            title=normalized_title,
-            ingredients=ingredients,
-            instructions=instructions,
-            image=thumbnail_url,
-            totalTime=raw_recipe.get("totalTime")
-        )
+            if raw_recipe is not None:
+                logger.info("Recipe extracted from caption — skipping transcript")
+            else:
+                logger.info("Caption had no usable recipe — falling back to transcript")
+                transcript = transcript_future.result().get("transcript", "")
+                combined_text = self.combine_text(title, description, transcript)
+                raw_recipe = self.extract_recipe_from_text(combined_text)
+
+            normalized_title = self.normalize_recipe_title(title)
+            ingredients = parse_ingredients(raw_recipe.get("ingredients", []))
+            instructions = self.strip_step_prefixes(raw_recipe.get("instructions", []))
+            logger.info(f"Successfully processed recipe: {normalized_title}")
+
+            return TikTokRecipeProcessorService(
+                title=normalized_title,
+                ingredients=ingredients,
+                instructions=instructions,
+                image=thumbnail_url,
+                totalTime=raw_recipe.get("totalTime")
+            )
+        finally:
+            # Don't block on a still-running transcription if the caption won.
+            executor.shutdown(wait=False)

@@ -5,6 +5,18 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as path from 'path';
 import { Construct } from 'constructs';
 
+/// Fail the synth if a required secret is missing, rather than deploying an
+/// empty string and silently breaking the Lambda at runtime.
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(
+      `Missing required env var ${name}. Add it to RecipeProviderService/.env (auto-loaded) before running cdk deploy.`
+    );
+  }
+  return value;
+}
+
 export class RecipeStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -57,7 +69,7 @@ export class RecipeStack extends cdk.Stack {
       timeout: cdk.Duration.minutes(5),
       memorySize: 2048,
       environment: {
-        OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
+        OPENAI_API_KEY: requireEnv('OPENAI_API_KEY'),
       },
     });
 
@@ -82,7 +94,7 @@ export class RecipeStack extends cdk.Stack {
       timeout: cdk.Duration.minutes(5),
       memorySize: 2048,
       environment: {
-        OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
+        OPENAI_API_KEY: requireEnv('OPENAI_API_KEY'),
         COOKIES_BUCKET: 'recipe-instagram-cookies',
         COOKIES_KEY: 'cookies/instagram_cookies.txt',
       },
@@ -108,13 +120,13 @@ export class RecipeStack extends cdk.Stack {
           ],
         },
       }),
-      timeout: cdk.Duration.seconds(60),
+      timeout: cdk.Duration.seconds(150),   // 2:30 server-side request cap
       memorySize: 512,
       environment: {
-        OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
+        OPENAI_API_KEY: requireEnv('OPENAI_API_KEY'),
         MEDIA_LAMBDA_NAME: tikTokMediaProcessor.functionName,
         INSTAGRAM_MEDIA_LAMBDA_NAME: instagramMediaProcessor.functionName,
-        FIREBASE_SERVICE_ACCOUNT: process.env.FIREBASE_SERVICE_ACCOUNT || '',
+        FIREBASE_SERVICE_ACCOUNT: requireEnv('FIREBASE_SERVICE_ACCOUNT'),
       },
     });
 
