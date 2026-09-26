@@ -2,6 +2,7 @@ import os
 import re
 import json
 import logging
+from openai import OpenAI
 from TikTokRecipeProcessor import TikTokRecipeProcessor
 from InstagramRecipeProcessor import InstagramRecipeProcessor
 from WebRecipeProcessor import WebRecipeProcessor
@@ -51,6 +52,73 @@ def _serialize_ingredient(i) -> dict:
     }
 
 
+def _is_blank_title(title) -> bool:
+    """True when the processor couldn't resolve a real title."""
+    if not title:
+        return True
+    t = title.strip().lower()
+    return t == "" or "no title" in t or t in {"untitled", "recipe", "n/a", "none", "unknown"}
+
+
+def _infer_title(ingredients, instructions) -> str:
+    """Best-guess dish name from the recipe's ingredients + steps, used when the
+    source provided no usable title."""
+    ingredient_names = ", ".join(i.name for i in ingredients[:20] if i.name)
+    steps = " ".join(s.text for s in instructions[:8] if s.text)
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a culinary assistant. Given a recipe's ingredients and steps, "
+                        "reply with ONLY a short, standard dish name as it would appear in a cookbook "
+                        "(e.g. 'Butter Chicken', 'Lemon Garlic Pasta'). No quotes, no extra words."
+                    )
+                },
+                {"role": "user", "content": f"Ingredients: {ingredient_names}\n\nSteps: {steps}"}
+            ]
+        )
+        title = completion.choices[0].message.content.strip().strip('"').strip()
+        return title or "Untitled Recipe"
+    except Exception as e:
+        logger.error(f"Title inference failed: {e}")
+        return "Untitled Recipe"
+
+
+def _serialize_nutrition(n) -> dict | None:
+    """Recipe nutrition (whole-recipe + per-serving + serving metadata), or None
+    when estimation was skipped/failed."""
+    if n is None:
+        return None
+
+    def values(v) -> dict:
+        return {"calories": v.calories, "protein": v.protein, "fat": v.fat, "carbs": v.carbs}
+
+    return {
+        "servings": n.servings,
+        "servingSize": n.servingSize,
+        "servingSizeGram": n.servingSizeGram,
+        "total": values(n.total),
+        "perServing": values(n.perServing),
+    }
+
+
+def _serialize_instruction(step) -> dict:
+    """One step: text plus optional per-step ingredients (same shape as the
+    top-level list) and an optional timer in minutes. Both null when absent."""
+    return {
+        "text": step.text,
+        "timer": step.timer,
+        "ingredients": (
+            [_serialize_ingredient(i) for i in step.ingredients]
+            if step.ingredients else None
+        )
+    }
+
+
 def handler(event, context):
     try:
         if "body" in event:
@@ -89,12 +157,19 @@ def handler(event, context):
 
         recipe = processor.process(user_input)
 
+        # Safety net: if the source didn't yield a usable title, have the AI name
+        # the dish from its ingredients + steps rather than shipping "no title".
+        if _is_blank_title(recipe.title):
+            logger.info("No usable title from processor — inferring from recipe content")
+            recipe.title = _infer_title(recipe.ingredients, recipe.instructions)
+
         recipe_data = {
             "title": recipe.title,
             "image": recipe.image,
             "totalTime": recipe.totalTime,
             "ingredients": [_serialize_ingredient(i) for i in recipe.ingredients],
-            "instructions": recipe.instructions,
+            "instructions": [_serialize_instruction(s) for s in recipe.instructions],
+            "nutrition": _serialize_nutrition(recipe.nutrition),
             "sourceURL": source_url,   # optional — null for plain-text imports
             "requestId": request_id    # echo back so the client can match the result
         }

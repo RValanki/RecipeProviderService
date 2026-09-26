@@ -4,8 +4,8 @@ import logging
 import requests
 from bs4 import BeautifulSoup
 from openai import OpenAI
-from models import TikTokRecipeProcessorService
-from TikTokRecipeProcessor import INGREDIENT_PROMPT, parse_ingredients
+from models import Nutrition, TikTokRecipeProcessorService
+from TikTokRecipeProcessor import INGREDIENT_PROMPT, parse_ingredients, parse_instructions, parse_nutrition
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -18,7 +18,8 @@ Return JSON exactly like:
   "title": "",
   "totalTime": 45,
   "ingredients": [...],
-  "instructions": [...]
+  "instructions": [...],
+  "nutrition": {"servings": 4, "servingSize": "1 bowl", "total": {"calories": 1240.0, "protein": 82.5, "fat": 63.0, "carbs": 74.0}}
 }
 """
 
@@ -36,12 +37,19 @@ Rules:
     1 tbsp honey ≈ 21g, 1 tbsp soy sauce ≈ 17g, 1 cup broth ≈ 240g
 - gramPerUnit: ALWAYS provide the gram weight of one single unit — never null
 
+Also provide a nutrition object with:
+- total: the TOTAL nutrition for the ENTIRE recipe — the sum across every structured ingredient above, NOT a per-serving value. Base each ingredient's contribution on its totalGram and standard food composition knowledge. Make sure it is realistic for the full amount of food (a substantial main recipe is typically well over 1000 kcal total). An object with calories (total kcal), protein, fat and carbs (grams), all numbers, never null.
+- servings: how many servings this recipe realistically yields, as an integer. Choose it so ONE serving is a NORMAL human portion — roughly 500–800 kcal for a main dish, 150–400 kcal for a lighter dish/side/snack. Derive it from the total (e.g. ~2000 kcal ≈ 3–4 servings, ~600 kcal ≈ 1). Do NOT inflate the count so a serving becomes an unrealistically small portion (e.g. a full meal under ~300 kcal). Never less than 1.
+- servingSize: a short logical-count description of ONE serving, e.g. "2 tacos", "1 bowl", "1 cup". Keep it to a countable portion, not a weight.
+Sanity-check that total ÷ servings is a believable per-serving calorie amount. Do NOT compute per-serving values yourself.
+
 Return JSON exactly like:
 {
   "ingredients": [
     { "name": "garlic", "emoji": "🧄", "quantity": 2, "unit": "cloves", "totalGram": 6.0, "gramPerUnit": 3.0 },
     { "name": "salt", "emoji": "🧂", "quantity": 1, "unit": "tsp", "totalGram": 6.0, "gramPerUnit": 6.0 }
-  ]
+  ],
+  "nutrition": { "servings": 4, "servingSize": "1 bowl", "total": { "calories": 1240.0, "protein": 82.5, "fat": 63.0, "carbs": 74.0 } }
 }
 """
 
@@ -164,12 +172,15 @@ Return JSON exactly like: {"totalTime": 45}
         result = json.loads(completion.choices[0].message.content)
         return result.get("totalTime", 30)
 
-    def parse_ingredients(self, ingredients_raw: list) -> list:
+    def structure_ingredients(self, ingredients_raw: list) -> tuple[list, Nutrition | None]:
+        """Returns (ingredients, nutrition). Nutrition is only produced on the
+        schema.org path, where we run the structuring call anyway — the AI-fallback
+        path carries nutrition at the top level of its own response instead."""
         if not ingredients_raw:
-            return []
+            return [], None
 
         if isinstance(ingredients_raw[0], dict):
-            return parse_ingredients(ingredients_raw)
+            return parse_ingredients(ingredients_raw), None
 
         logger.info("Structuring plain string ingredients via OpenAI")
         completion = self.client.chat.completions.create(
@@ -180,8 +191,9 @@ Return JSON exactly like: {"totalTime": 45}
                 {"role": "user", "content": json.dumps(ingredients_raw)}
             ]
         )
-        structured = json.loads(completion.choices[0].message.content).get("ingredients", [])
-        return parse_ingredients(structured)
+        result = json.loads(completion.choices[0].message.content)
+        structured = parse_ingredients(result.get("ingredients", []))
+        return structured, parse_nutrition(result, structured)
 
     def strip_step_prefixes(self, instructions: list[str]) -> list[str]:
         return [re.sub(r"^Step\s*\d+:\s*", "", step) for step in instructions]
@@ -211,12 +223,17 @@ Return JSON exactly like: {"totalTime": 45}
             text = soup.get_text(separator="\n")
             raw = self.ai_fallback(text)
 
-        ingredients = self.parse_ingredients(raw.get("ingredients", []))
-        instructions = self.strip_step_prefixes(raw.get("instructions", []))
+        ingredients, structured_nutrition = self.structure_ingredients(raw.get("ingredients", []))
+        # Handles both schema.org string steps and the AI-fallback step objects.
+        instructions = parse_instructions(raw.get("instructions", []))
 
         total_time = raw.get("totalTime")
         if total_time is None:
-            total_time = self.estimate_total_time(raw.get("title", ""), raw.get("ingredients", []), instructions)
+            total_time = self.estimate_total_time(
+                raw.get("title", ""),
+                raw.get("ingredients", []),
+                [step.text for step in instructions]
+            )
 
         logger.info(f"Successfully processed recipe: {raw.get('title', '')}")
 
@@ -225,5 +242,8 @@ Return JSON exactly like: {"totalTime": 45}
             ingredients=ingredients,
             instructions=instructions,
             image=image,
-            totalTime=total_time
+            totalTime=total_time,
+            # AI-fallback carries nutrition at the top level; the schema.org path
+            # gets it from the ingredient-structuring call.
+            nutrition=parse_nutrition(raw, ingredients) or structured_nutrition
         )

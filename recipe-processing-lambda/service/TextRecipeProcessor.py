@@ -3,7 +3,7 @@ import json
 import logging
 from openai import OpenAI
 from models import TikTokRecipeProcessorService
-from TikTokRecipeProcessor import INGREDIENT_PROMPT, parse_ingredients
+from TikTokRecipeProcessor import INGREDIENT_PROMPT, parse_ingredients, parse_instructions, parse_nutrition
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -16,7 +16,8 @@ Return JSON exactly like:
   "title": "",
   "totalTime": 45,
   "ingredients": [...],
-  "instructions": [...]
+  "instructions": [...],
+  "nutrition": {"servings": 4, "servingSize": "1 bowl", "total": {"calories": 1240.0, "protein": 82.5, "fat": 63.0, "carbs": 74.0}}
 }
 """
 
@@ -46,7 +47,7 @@ class TextRecipeProcessor:
         raw = self.extract_recipe_from_text(text_chunk)
         title = raw.get("title", "")
         ingredients = parse_ingredients(raw.get("ingredients", []))
-        instructions = self.strip_step_prefixes(raw.get("instructions", []))
+        instructions = parse_instructions(raw.get("instructions", []))
         logger.info(f"Successfully processed recipe: {title}")
 
         return TikTokRecipeProcessorService(
@@ -54,5 +55,6 @@ class TextRecipeProcessor:
             ingredients=ingredients,
             instructions=instructions,
             image=None,
-            totalTime=raw.get("totalTime")
+            totalTime=raw.get("totalTime"),
+            nutrition=parse_nutrition(raw, ingredients)
         )

@@ -5,7 +5,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from openai import OpenAI
 from models import TikTokRecipeProcessorService
-from TikTokRecipeProcessor import INGREDIENT_PROMPT, CAPTION_EXTRACT_PROMPT, parse_ingredients
+from TikTokRecipeProcessor import INGREDIENT_PROMPT, CAPTION_EXTRACT_PROMPT, parse_ingredients, parse_instructions, parse_nutrition
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -127,7 +127,7 @@ Rules:
 
             normalized_title = self.normalize_recipe_title(title, description, transcript)
             ingredients = parse_ingredients(raw_recipe.get("ingredients", []))
-            instructions = self.strip_step_prefixes(raw_recipe.get("instructions", []))
+            instructions = parse_instructions(raw_recipe.get("instructions", []))
             logger.info(f"Successfully processed Instagram recipe: {normalized_title}")
 
             return TikTokRecipeProcessorService(
@@ -135,7 +135,8 @@ Rules:
                 ingredients=ingredients,
                 instructions=instructions,
                 image=thumbnail_url,
-                totalTime=raw_recipe.get("totalTime")
+                totalTime=raw_recipe.get("totalTime"),
+                nutrition=parse_nutrition(raw_recipe, ingredients)
             )
         finally:
             # Don't block on a still-running transcription if the caption won.
