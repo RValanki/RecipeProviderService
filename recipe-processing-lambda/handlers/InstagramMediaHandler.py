@@ -1,6 +1,7 @@
 import json
 import os
 from InstagramMediaProcessor import InstagramMediaProcessor
+from ssrf import assert_safe_media_host, UnsafeURLError
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 COOKIES_BUCKET = os.environ.get("COOKIES_BUCKET")
@@ -16,6 +17,13 @@ def handler(event, context):
                 "statusCode": 400,
                 "body": json.dumps({"error": "Missing 'url' in request"})
             }
+
+        # Last line of defence before yt-dlp runs (with the real Instagram session
+        # cookies): the host must be Instagram's own domain, however we were invoked.
+        try:
+            assert_safe_media_host(url, "instagram")
+        except UnsafeURLError as e:
+            return {"statusCode": 400, "body": json.dumps({"error": f"unsafe_url: {e}"})}
 
         # Temporary debug
         print(f"[debug] COOKIES_BUCKET={COOKIES_BUCKET}, COOKIES_KEY={COOKIES_KEY}")

@@ -54,10 +54,13 @@ Use all three sources to extract the most accurate recipe possible.
                 {
                     "role": "system",
                     "content": """
-You are given the title, caption, and transcript of an Instagram cooking video.
-Extract and return only the clean, standard recipe name.
+You are given the title, caption, and spoken transcript of an Instagram cooking video.
+Work out what the dish ACTUALLY is from all three sources together, then return its
+clean, standard recipe name.
 Rules:
-- Use all three sources to determine what dish is actually being made
+- Do NOT blindly copy the caption or video title — creators often use vague, clickbait,
+  or unrelated captions. Infer the real dish from the ingredients and steps described
+  across the caption AND the transcript.
 - Remove hashtags, emojis, filler phrases like "the best", "easy", "you need to try this"
 - Remove creator names or personal commentary
 - Return a short, standard recipe title like you'd see in a cookbook (e.g. "Butter Chicken", "Classic Tiramisu")
@@ -101,10 +104,12 @@ Rules:
     def process(self, url: str) -> TikTokRecipeProcessorService:
         logger.info(f"Processing Instagram Reel URL: {url}")
 
-        # Start transcription (download + audio + Whisper) in parallel so it's
-        # ready if the caption turns out not to hold the recipe. Fetch the
-        # lightweight metadata (incl. caption) on this thread meanwhile.
-        executor = ThreadPoolExecutor(max_workers=1)
+        # Kick off transcription (download + audio + Whisper — the slow part) in a
+        # background thread right away, so it's ready IF the caption turns out to be
+        # insufficient. On the happy path (caption is a complete recipe) we return
+        # before it finishes and simply abandon it — that avoided Whisper call is
+        # the whole point of trying the caption first.
+        executor = ThreadPoolExecutor(max_workers=2)
         transcript_future = executor.submit(self.invoke_media_processor, url, "transcribe")
         try:
             meta = self.invoke_media_processor(url, "metadata")
@@ -112,20 +117,39 @@ Rules:
             description = meta.get("description", "")
             thumbnail_url = meta.get("thumbnail_url")
 
-            transcript = ""
-            raw_recipe = None
-            if description and description.strip():
-                raw_recipe = self.extract_recipe_from_caption(description)
+            # Caption-first: if the caption ALONE is a complete, unambiguous recipe
+            # (dish name explicitly stated + full ingredients + clear steps), use it
+            # and skip the transcript entirely. The prompt is strict and returns
+            # {"recipe": null} on any uncertainty, so we only take this fast path
+            # when the caption is genuinely self-sufficient. Skip the call outright
+            # when there's no caption to read.
+            caption_recipe = self.extract_recipe_from_caption(description) if description.strip() else None
+            if caption_recipe:
+                logger.info("Caption is a complete recipe — skipping audio transcript")
+                ingredients = parse_ingredients(caption_recipe.get("ingredients", []))
+                instructions = parse_instructions(caption_recipe.get("instructions", []))
+                return TikTokRecipeProcessorService(
+                    title=caption_recipe.get("title", ""),
+                    ingredients=ingredients,
+                    instructions=instructions,
+                    image=thumbnail_url,
+                    totalTime=caption_recipe.get("totalTime"),
+                    nutrition=parse_nutrition(caption_recipe, ingredients)
+                )
 
-            if raw_recipe is not None:
-                logger.info("Recipe extracted from caption — skipping transcript")
-            else:
-                logger.info("Caption had no usable recipe — falling back to transcript")
-                transcript = transcript_future.result().get("transcript", "")
-                combined_text = self.combine_text(title, description, transcript)
-                raw_recipe = self.extract_recipe_from_text(combined_text)
+            # Caption wasn't enough — fall back to caption + audio transcript.
+            logger.info("Caption insufficient — falling back to audio transcript")
+            transcript = transcript_future.result().get("transcript", "")
+            combined_text = self.combine_text(title, description, transcript)
 
-            normalized_title = self.normalize_recipe_title(title, description, transcript)
+            # Extraction and title-normalisation are independent (both read only the
+            # already-fetched text, not each other's output), so run the two model
+            # calls concurrently instead of serially — saves one round-trip.
+            extract_future = executor.submit(self.extract_recipe_from_text, combined_text)
+            title_future = executor.submit(self.normalize_recipe_title, title, description, transcript)
+            raw_recipe = extract_future.result()
+            normalized_title = title_future.result()
+
             ingredients = parse_ingredients(raw_recipe.get("ingredients", []))
             instructions = parse_instructions(raw_recipe.get("instructions", []))
             logger.info(f"Successfully processed Instagram recipe: {normalized_title}")

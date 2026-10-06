@@ -20,10 +20,34 @@ class TikTokMediaProcessor:
             capture_output=True,
             text=True
         )
+        if result.returncode != 0:
+            raise RuntimeError(f"yt-dlp metadata failed: {result.stderr}")
         data = json.loads(result.stdout)
         title = data.get("title", "")
         description = data.get("description", "")
-        return title, description
+        # Take the thumbnail straight from yt-dlp (reliable — same fetch that
+        # downloads the video). The standalone oEmbed endpoint is heavily
+        # rate-limited (429/503) and must NOT be the primary source.
+        thumbnail_url = self._best_thumbnail(data)
+        return title, description, thumbnail_url
+
+    @staticmethod
+    def _best_thumbnail(data: dict) -> str | None:
+        """Pick the nicest static thumbnail from yt-dlp's choices. TikTok offers
+        'cover' (the creator's chosen poster — best), 'originCover' (raw origin
+        frame) and 'dynamicCover' (an animated preview that renders poorly as a
+        still). yt-dlp's default ordering puts 'originCover' last, which is why the
+        image looked off — so choose by id instead of taking the last entry."""
+        thumbs = data.get("thumbnails") or []
+        by_id = {t.get("id"): t.get("url") for t in thumbs if t.get("url")}
+        for key in ("cover", "originCover"):
+            if by_id.get(key):
+                return by_id[key]
+        # Any remaining non-animated thumbnail, then yt-dlp's singular pick.
+        for t in thumbs:
+            if t.get("id") != "dynamicCover" and t.get("url"):
+                return t["url"]
+        return data.get("thumbnail") or (thumbs[-1].get("url") if thumbs else None)
 
     # -----------------------------
     # 2️⃣ Download TikTok video
@@ -92,8 +116,11 @@ class TikTokMediaProcessor:
     # Metadata only — fast path (no download/transcription)
     # -----------------------------
     def process_metadata(self, url: str) -> dict:
-        title, description = self.get_tiktok_metadata(url)
-        thumbnail_url = self.get_tiktok_display_thumbnail(url)
+        title, description, thumbnail_url = self.get_tiktok_metadata(url)
+        # Fall back to the oEmbed thumbnail only when yt-dlp didn't surface one —
+        # oEmbed is rate-limited and unreliable, so it's the last resort, not the first.
+        if not thumbnail_url:
+            thumbnail_url = self.get_tiktok_display_thumbnail(url)
         return {
             "title": title,
             "description": description,

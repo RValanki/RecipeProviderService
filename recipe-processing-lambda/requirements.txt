@@ -3,4 +3,5 @@ requests
 yt-dlp
 beautifulsoup4
 google-cloud-firestore
+google-cloud-storage
 google-auth

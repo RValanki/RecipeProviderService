@@ -69,6 +69,47 @@ def write_logged_meal_event(user_id: str, meal_data: dict) -> str:
     return event_id
 
 
+def write_recipe_failed_event(user_id: str, request_id: str | None, reason: str = "",
+                              message: str = "We couldn't import your recipe") -> str:
+    """
+    Write a recipeFailed event to Firestore under users/{userId}/events so the
+    client can resolve the matching pending import (by requestId) as failed
+    instead of leaving it to time out.
+
+    Args:
+        user_id: Firebase user ID
+        request_id: the import's requestId, echoed so the client can match it
+        reason: short machine/debug failure reason (truncated)
+        message: user-facing message the client shows in the banner
+
+    Returns:
+        The Firestore document ID of the created event
+    """
+    db = _get_db()
+
+    event_id = str(uuid.uuid4())
+    event = {
+        "id": event_id,
+        "type": "recipeFailed",
+        "title": "Import Failed",
+        "message": message,
+        "priority": 1,
+        "timestamp": datetime.now(timezone.utc),
+        "readBy": [],
+        "requestId": request_id,
+        "reason": (reason or "")[:500],
+    }
+
+    db.collection("users") \
+      .document(user_id) \
+      .collection("events") \
+      .document(event_id) \
+      .set(event)
+
+    print(f"⚠️ recipeFailed event written for user {user_id}: {event_id} (request {request_id})")
+    return event_id
+
+
 def write_recipe_ready_event(user_id: str, recipe_data: dict) -> str:
     """
     Write a recipeReady event to Firestore under users/{userId}/events.
