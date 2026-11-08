@@ -1,5 +1,20 @@
+import re
 from dataclasses import dataclass
 from typing import List, Optional
+
+
+def normalize_recipe_title(title: str) -> str:
+    """Recipe titles sometimes arrive in ALL CAPS (scraped pages, clickbait
+    captions). Convert a fully-uppercase title to Title Case (first letter of
+    each word); leave mixed-case titles — which may hold intentional acronyms
+    like "BBQ" — untouched. Apostrophes stay inside their word so "GRANDMA'S"
+    becomes "Grandma's" (not "Grandma'S"), matching the client."""
+    if not title:
+        return title
+    letters = [c for c in title if c.isalpha()]
+    if not (letters and all(c.isupper() for c in letters)):
+        return title
+    return re.sub(r"[A-Za-z]+(?:'[A-Za-z]+)*", lambda m: m.group(0).capitalize(), title)
 
 
 @dataclass
@@ -55,3 +70,8 @@ class TikTokRecipeProcessorService:
     image: Optional[str] = None
     totalTime: Optional[int] = None
     nutrition: Optional[Nutrition] = None
+
+    def __post_init__(self):
+        # Centrally normalise the title for every processor path (text, web,
+        # Instagram, TikTok) so an ALL-CAPS title never reaches the client.
+        self.title = normalize_recipe_title(self.title)

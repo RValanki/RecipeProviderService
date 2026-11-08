@@ -32,6 +32,13 @@ QUOTA_TABLE = os.environ.get("QUOTA_TABLE_NAME")
 DAILY_LIMIT = int(os.environ.get("DAILY_IMPORT_LIMIT", "30"))
 MONTHLY_LIMIT = int(os.environ.get("MONTHLY_IMPORT_LIMIT", "150"))
 
+# Idempotency: one row per requestId. A conditional PutItem before enqueue means a
+# given requestId is only ever enqueued (and quota-counted) once — even if the
+# client resends after a lost 202. TTL garbage-collects old keys (~1 day, matching
+# the client's pending-import window).
+DEDUP_TABLE = os.environ.get("DEDUP_TABLE_NAME")
+DEDUP_TTL_SECONDS = 24 * 60 * 60
+
 _sqs = None
 _ddb = None
 
@@ -50,6 +57,12 @@ class QuotaExceeded(Exception):
         super().__init__(f"{scope} import limit reached")
 
 
+class DuplicateRequest(Exception):
+    """Raised when this requestId has already been accepted — the job is (or was)
+    already enqueued, so we must not enqueue or quota-count it again."""
+    pass
+
+
 def _get_sqs():
     global _sqs
     if _sqs is None:
@@ -62,6 +75,29 @@ def _get_ddb():
     if _ddb is None:
         _ddb = boto3.client("dynamodb")
     return _ddb
+
+
+def _claim_request(request_id: str) -> None:
+    """Idempotency gate. Conditionally writes the requestId row; if it already
+    exists, this is a duplicate (resend after a lost 202, or a double-fire) and we
+    raise DuplicateRequest so the caller returns 202 WITHOUT re-enqueuing or
+    re-counting quota. No-op when the table isn't configured. Fails OPEN on an
+    unexpected DynamoDB error — idempotency is a safeguard, not a hard gate, and a
+    counter-store blip shouldn't block imports."""
+    if not DEDUP_TABLE:
+        return
+    ttl = int(time.time()) + DEDUP_TTL_SECONDS
+    ddb = _get_ddb()
+    try:
+        ddb.put_item(
+            TableName=DEDUP_TABLE,
+            Item={"requestId": {"S": request_id}, "ttl": {"N": str(ttl)}},
+            ConditionExpression="attribute_not_exists(requestId)",
+        )
+    except ddb.exceptions.ConditionalCheckFailedException:
+        raise DuplicateRequest()
+    except Exception as e:
+        logger.error(f"Dedup claim failed open for request {request_id}: {e}")
 
 
 def _check_and_increment_quota(user_id: str) -> None:
@@ -182,6 +218,15 @@ def handler(event, context):
         except UnsafeURLError as e:
             logger.info(f"Blocked unsafe import URL for user {user_id}: {e}")
             return _response(400, {"error": "unsafe_url", "message": "That link isn't allowed."})
+
+        # Idempotency gate — BEFORE quota, so a resend of the same requestId never
+        # re-counts quota or re-enqueues. A duplicate returns 202 as if freshly
+        # accepted (the original job is already running or done).
+        try:
+            _claim_request(request_id)
+        except DuplicateRequest:
+            logger.info(f"Duplicate requestId={request_id} — already accepted, not re-enqueuing")
+            return _response(202, {"status": "accepted", "requestId": request_id})
 
         # Enforce per-user import limits before doing any work.
         try:

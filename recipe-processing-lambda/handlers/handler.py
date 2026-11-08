@@ -339,7 +339,8 @@ def recipe_failure_handler(event, context):
             write_recipe_failed_event(
                 user_id=user_id,
                 request_id=request_id,
-                reason="Import timed out",
+                reason="worker_crashed",
+                message="We couldn't import this recipe. Please try again.",
             )
         except Exception as e:
             logger.error(f"DLQ: failed to write recipeFailed event: {e}")

@@ -128,7 +128,12 @@ export class RecipeStack extends cdk.Stack {
           ],
         },
       }),
-      timeout: cdk.Duration.seconds(150),   // 2:30 worst-case import
+      // Let a slow import run to completion rather than killing it — the client
+      // owns the "too long" UX decision (its ~135s soft timeout), and a late finish
+      // still delivers via the recipeReady event. Capped at 5 min (matches the media
+      // Lambdas) so a genuinely stuck job can't hog one of the 2 concurrency slots
+      // indefinitely. Raise once Lambda concurrency is lifted above 2.
+      timeout: cdk.Duration.seconds(300),
       // Lambda CPU scales with memory; 512 MB was CPU-starved, slowing JSON/HTML
       // parsing and every OpenAI TLS round-trip. 1536 MB (~1 vCPU) cuts wall-time
       // on every import — and since faster = shorter billed duration, near cost-neutral.
@@ -174,16 +179,16 @@ export class RecipeStack extends cdk.Stack {
     const recipeImportQueue = new sqs.Queue(this, 'RecipeImportQueue', {
       queueName: 'recipe-import-queue',
       encryption: sqs.QueueEncryption.SQS_MANAGED,
-      // Just above the worker timeout (150s) so a running job isn't re-delivered,
-      // with a little buffer. Kept short (not 6x) because we do NOT want a long
-      // retry tail — the client gives up at ~135s, so churning retries for minutes
-      // afterwards only wastes OpenAI spend and produces stale "zombie" successes.
-      visibilityTimeout: cdk.Duration.seconds(180),
+      // Just above the worker timeout (300s) so a running job isn't re-delivered
+      // while still processing, with a little buffer.
+      visibilityTimeout: cdk.Duration.seconds(330),
       deadLetterQueue: {
         queue: recipeImportDLQ,
-        // One attempt only. The worker notifies the client of caught failures
-        // itself (recipeFailed event) and returns cleanly; the DLQ is reserved for
-        // the hard-timeout/crash case, handled by the failure consumer below.
+        // One attempt only. The worker notifies the client of its own caught
+        // failures (recipeFailed event) and returns cleanly. A hard crash/kill lands
+        // in the DLQ for inspection — but we no longer emit a timeout-failure from
+        // it: the client's soft timeout owns the "too long" decision, and a late
+        // finish still delivers via recipeReady.
         maxReceiveCount: 1,
       },
     });
@@ -200,6 +205,21 @@ export class RecipeStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       timeToLiveAttribute: 'ttl',
       removalPolicy: cdk.RemovalPolicy.DESTROY, // just counters — safe to recreate
+    });
+
+    // -----------------------------
+    // Import idempotency table (dedup by requestId)
+    // -----------------------------
+    // One row per requestId; the producer does a conditional PutItem before
+    // enqueuing, so a given requestId is only ever enqueued (and quota-counted)
+    // once — even if the client resends after a lost 202. TTL (~1 day, matching the
+    // client's pending-import window) garbage-collects old keys.
+    const dedupTable = new dynamodb.Table(this, 'RecipeImportDedup', {
+      tableName: 'recipe-import-dedup',
+      partitionKey: { name: 'requestId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'ttl',
+      removalPolicy: cdk.RemovalPolicy.DESTROY, // just dedup keys — safe to recreate
     });
 
     // -----------------------------
@@ -227,14 +247,16 @@ export class RecipeStack extends cdk.Stack {
       environment: {
         RECIPE_QUEUE_URL: recipeImportQueue.queueUrl,
         QUOTA_TABLE_NAME: quotaTable.tableName,
+        DEDUP_TABLE_NAME: dedupTable.tableName,
         DAILY_IMPORT_LIMIT: '30',
         MONTHLY_IMPORT_LIMIT: '150',
       },
     });
 
-    // Producer may only send to the queue + read/write its own quota counters.
+    // Producer may only send to the queue + read/write its own quota + dedup tables.
     recipeImportQueue.grantSendMessages(recipeEnqueue);
     quotaTable.grantReadWriteData(recipeEnqueue);
+    dedupTable.grantReadWriteData(recipeEnqueue);
 
     // Let the API Gateway invoke the producer. The gateway imports this Lambda by
     // ARN (in CookiGatewayCDK), so it can't add this permission itself; granting
@@ -263,12 +285,18 @@ export class RecipeStack extends cdk.Stack {
     }));
 
     // -----------------------------
-    // RecipeImportFailureHandler Lambda (DLQ consumer — fallback notifier)
+    // RecipeImportFailureHandler Lambda (DLQ consumer — crash safety net)
     // -----------------------------
-    // Fallback failure signal: when the worker is killed (hard timeout / crash)
-    // before it can emit its own recipeFailed event, the job lands in the DLQ.
-    // This Lambda drains the DLQ and writes recipeFailed so the client's pending
-    // import resolves instead of hanging.
+    // NOT a timeout mechanism — the client's soft timeout owns the "too long"
+    // decision, and the worker emits its own inline recipeFailed for definitive
+    // errors (not_a_recipe, image_unavailable, unsafe_url, OpenAI/parse failures).
+    // This only catches a HARD crash/kill (OOM, uncaught error, the 300s execution
+    // cap) where the worker died before writing anything. Such a message reaches the
+    // DLQ only after the visibility timeout (~330s), so this notifies LATE — its job
+    // is to convert a genuinely-dead import's stuck client-side `.timedOut` into a
+    // definitive `.failed` so the user isn't stuck resuming a corpse. A successful
+    // (even slow) import deletes its SQS message and never reaches here, so there are
+    // no false failures.
     const recipeImportFailureHandler = new lambda.Function(this, 'RecipeImportFailureHandler', {
       runtime: lambda.Runtime.PYTHON_3_12,
       architecture: lambda.Architecture.X86_64,
